@@ -8,205 +8,248 @@ import com.appliedrec.verid3.common.IImage
 import com.appliedrec.verid3.common.SuspendingCloseable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 
-@Suppress("UNCHECKED_CAST")
-class FaceTemplateRegistry(
-    faceRecognition: Array<FaceRecognition<*, *>>,
-    faceTemplates: Array<TaggedFaceTemplate<*, *>>
+/**
+ * Face template registry that keeps supplied faces in memory.
+ *
+ * The registry provides functions to register, identify and authenticate a face.
+ *
+ * @param V Face template version
+ * @param D Face template data type
+ * @property faceRecognition Face recognition that produces face templates with the supplied version
+ * @property configuration Registry configuration
+ * @constructor
+ * @param faceTemplates List of initial face templates
+ */
+class FaceTemplateRegistry<V: FaceTemplateVersion<D>, D>(
+    val faceRecognition: FaceRecognition<V, D>,
+    faceTemplates: List<TaggedFaceTemplate<V, D>>,
+    val configuration: Configuration = Configuration()
 ) : SuspendingCloseable {
 
-    interface Delegate {
-        suspend fun onFaceTemplatesAdded(faceTemplates: Array<TaggedFaceTemplate<*, *>>)
-        fun authenticationThreshold(faceTemplateVersion: FaceTemplateVersion<*>): Float = 0.5f
-        fun identificationThreshold(faceTemplateVersion: FaceTemplateVersion<*>): Float = 0.5f
-        fun authEnrolmentThreshold(faceTemplateVersion: FaceTemplateVersion<*>): Float = 0.5f
-        val useSingleFaceTemplateVersionForIdentification: Boolean
-            get() = true
-        val autoEnrolFaceTemplates: Boolean
-            get() = true
-    }
+    /**
+     * Registry configuration
+     *
+     * @property authenticationThreshold Threshold for face authentication
+     * @property identificationThreshold Threshold for face identification
+     * @property autoEnrolmentThreshold Threshold for face auto-enrolment
+     */
+    data class Configuration(
+        val authenticationThreshold: Float = 0.5f,
+        val identificationThreshold: Float = 0.5f,
+        val autoEnrolmentThreshold: Float = 0.6f
+    )
 
     private val faceTemplateList = faceTemplates.toMutableList()
     private val job = SupervisorJob()
     private val coroutineContext = job + Dispatchers.Default
+    private val lock = Mutex()
+    private val isClosed = AtomicBoolean(false)
 
-    val faceTemplates: Array<TaggedFaceTemplate<*, *>>
-        get() = faceTemplateList.toTypedArray()
-    var delegate: Delegate? = null
-    val faceTemplateVersions: Array<FaceTemplateVersion<*>>
-        get() = faceRecognition.keys.toTypedArray()
-    val identifiers: Set<String>
-        get() = faceTemplateList.map { it.identifier }.toSet()
-    val faceRecognition: LinkedHashMap<FaceTemplateVersion<*>, FaceRecognition<*, *>>
-
-    init {
-        this.faceRecognition = faceRecognition
-            .associateByTo(LinkedHashMap()) { it.version }
+    /**
+     * Get all registered face templates
+     *
+     * @return Face template list
+     */
+    suspend fun getFaceTemplates(): List<TaggedFaceTemplate<V, D>> {
+        ensureNotClosed()
+        return lock.withLock {
+            faceTemplateList.toList()
+        }
     }
 
+    /**
+     * Get all registered face identifiers
+     *
+     * @return Set of identifiers
+     */
+    suspend fun getIdentifiers(): Set<String> {
+        ensureNotClosed()
+        return lock.withLock {
+            faceTemplateList.map { it.identifier }.toSet()
+        }
+    }
+
+    /**
+     * Register a face template from face and image
+     *
+     * @param face Face to register a template for
+     * @param image Image in which the face was detected
+     * @param identifier Identifier for the user to whom the face belongs
+     * @param forceEnrolment If `true`, the face will be enrolled even if another identifier with a
+     * similar face already exists.
+     * @return Registered face template
+     */
     suspend fun registerFace(
         face: Face,
         image: IImage,
-        identifier: String
-    ): Unit = withContext(coroutineContext) {
-        val templatesToAdd = faceRecognition.values.mapNotNull { rec ->
-            val template = rec.createFaceRecognitionTemplates(
-                arrayOf(face), image).firstOrNull()
-            if (template == null) {
-                null
-            } else {
-                TaggedFaceTemplate(template, identifier)
+        identifier: String,
+        forceEnrolment: Boolean = false
+    ): FaceTemplate<V, D> = withContext(coroutineContext) {
+        ensureNotClosed()
+        val template = faceRecognition.createFaceRecognitionTemplates(
+            listOf(face), image).first()
+        val taggedTemplate = TaggedFaceTemplate(template, identifier)
+        if (!forceEnrolment) {
+            val allTemplates = getFaceTemplates()
+            val scores = faceRecognition.compareFaceRecognitionTemplates(
+                allTemplates.map { it.faceTemplate },
+                template
+            )
+            val existingUser = scores
+                .zip(allTemplates)
+                .firstOrNull { (score, faceTemplate) ->
+                    score >= configuration.authenticationThreshold
+                            && faceTemplate.identifier != identifier
+                }
+                ?.second?.identifier
+            if (existingUser != null) {
+                throw IllegalStateException("Similar face is already registered as $existingUser")
             }
         }
-        if (templatesToAdd.isNotEmpty()) {
-            faceTemplateList.addAll(templatesToAdd)
-            try {
-                delegate?.onFaceTemplatesAdded(templatesToAdd.toTypedArray())
-            } catch (e: Exception) {
-                faceTemplateList.removeAll(templatesToAdd)
-            }
+        lock.withLock {
+            faceTemplateList.add(taggedTemplate)
         }
+        taggedTemplate.faceTemplate
     }
 
+    /**
+     * Identify a face and image
+     *
+     * @param face Face to identify
+     * @param image Image in which the face was detected
+     * @return List of [identification results][IdentificationResult] ordered by best match first
+     *
+     * Note that the list will only contain one result per identifier. So if more than one face
+     * template of one identifier match only the best matching face template will be returned.
+     */
     suspend fun identifyFace(
         face: Face,
         image: IImage
-    ): IdentificationResult = withContext(coroutineContext) {
-        val allIds = identifiers
-        val useSingleVersion = delegate?.useSingleFaceTemplateVersionForIdentification ?: true
-
-        suspend fun identify(version: FaceTemplateVersion<*>): LinkedHashMap<String, Float> {
-            val rec = faceRecognition[version] as FaceRecognition<FaceTemplateVersion<Any>, Any>
-            val template = rec.createFaceRecognitionTemplates(arrayOf(face), image).first()
-            val taggedTemplates: Array<TaggedFaceTemplate<FaceTemplateVersion<Any>, Any>> =
-                getTemplatesByVersion(version) as Array<TaggedFaceTemplate<FaceTemplateVersion<Any>, Any>>
-            val templates = taggedTemplates.map { it.faceTemplate }.toTypedArray()
-            val scores = rec.compareFaceRecognitionTemplates(templates, template)
-            val threshold = delegate?.identificationThreshold(version) ?: 0.5f
-            val results = scores.toList()
-                .mapIndexedNotNull { index, score ->
-                    if (score >= threshold) {
-                        taggedTemplates[index].identifier to score
-                    } else {
-                        null
-                    }
-                }
-                .groupBy { it.first }
-                .mapValues { (_, values) -> values.maxOf { it.second } }
-                .toList()
-                .sortedByDescending { it.second }
-                .toMap(LinkedHashMap())
-            if (delegate?.autoEnrolFaceTemplates ?: true) {
-                val threshold = delegate?.authEnrolmentThreshold(version) ?: 0.5f
-                if ((results.values.firstOrNull() ?: 0f) >= threshold) {
-                    autoEnrolFace(face, image, results.keys.first())
+    ): List<IdentificationResult<V, D>> = withContext(coroutineContext) {
+        ensureNotClosed()
+        val faceTemplates = getFaceTemplates()
+        val template = faceRecognition.createFaceRecognitionTemplates(listOf(face), image)
+            .first()
+        val scores = faceRecognition.compareFaceRecognitionTemplates(
+            faceTemplates.map { it.faceTemplate },
+            template
+        )
+        scores.zip(faceTemplates)
+            .mapNotNull { (score, faceTemplate) ->
+                if (score >= configuration.identificationThreshold) {
+                    IdentificationResult(faceTemplate, score)
+                } else {
+                    null
                 }
             }
-            return results
-        }
-
-        if (useSingleVersion) {
-            for (version in faceTemplateVersions) {
-                val versionIds = getIdentifiersByVersion(version)
-                if (versionIds.containsAll(allIds)) {
-                    val result = identify(version)
-                    return@withContext IdentificationResult(version, result)
-                }
-            }
-            throw IllegalArgumentException("No face template version eligible for comparison")
-        } else {
-            for (version in faceTemplateVersions) {
-                val result = identify(version)
-                if (result.isNotEmpty()) {
-                    return@withContext IdentificationResult(
-                        version,
-                        result
-                    )
-                }
-            }
-            return@withContext IdentificationResult(
-                faceRecognition.keys.first(),
-                LinkedHashMap()
-            )
-        }
+            .groupBy { it.taggedFaceTemplate.identifier }
+            .map { (identifier, results) -> results.maxBy { it.score } }
+            .sortedByDescending { it.score }
     }
 
+    /**
+     * Authenticate face and image against a specific identifier
+     *
+     * The function will throw an [IllegalStateException] if no face templates are registered for
+     * the given identifier.
+     *
+     * @param face Face to authenticate
+     * @param image Image in which the face was detected
+     * @param identifier Identifier to authenticate against
+     * @return [Authentication result][AuthenticationResult] that contains the comparison score
+     * and the face templates used for the comparison.
+     */
     suspend fun authenticateFace(
         face: Face,
         image: IImage,
         identifier: String
-    ): AuthenticationResult = withContext(coroutineContext) {
-        val version = getVersionsForIdentifier(identifier).firstOrNull()
-            ?: throw IllegalArgumentException("$identifier not registered")
-        val recognition = faceRecognition[version] as FaceRecognition<FaceTemplateVersion<Any>, Any>
-        val template = recognition
-            .createFaceRecognitionTemplates(arrayOf(face), image).first()
-        val templates = getTemplatesForIdentifier(identifier, version)
-            .map { it.faceTemplate }
-            .toTypedArray() as Array<FaceTemplate<FaceTemplateVersion<Any>, Any>>
-        val scores = recognition
-            .compareFaceRecognitionTemplates(templates, template)
-        val maxScore = scores.max()
-        val threshold = delegate?.authenticationThreshold(version) ?: 0.5f
-        val authenticated = maxScore >= threshold
-        if (maxScore >= (delegate?.authEnrolmentThreshold(version) ?: 0.5f)
-            && delegate?.autoEnrolFaceTemplates ?: true) {
-            autoEnrolFace(face, image, identifier)
+    ): AuthenticationResult<V, D> = withContext(coroutineContext) {
+        ensureNotClosed()
+        val templates = getFaceTemplates().mapNotNull {
+            if (it.identifier == identifier) it.faceTemplate else null
         }
-        AuthenticationResult(authenticated, maxScore, version)
+        if (templates.isEmpty()) {
+            throw IllegalStateException("$identifier has no face templates")
+        }
+        val template = faceRecognition.createFaceRecognitionTemplates(listOf(face), image)
+            .first()
+        val scores = faceRecognition.compareFaceRecognitionTemplates(
+            templates,
+            template
+        )
+        val maxIndex = scores.indices.maxByOrNull { scores[it] } ?: -1
+        val maxScore = scores[maxIndex]
+        val matchedTemplate = templates[maxIndex]
+        AuthenticationResult(
+            maxScore >= configuration.authenticationThreshold,
+            template,
+            matchedTemplate,
+            maxScore
+        )
     }
 
+    /**
+     * Get face templates tagged as the given identifier
+     *
+     * @param identifier Identifier for which to get face templates
+     * @return List of face templates tagged as the given identifier
+     */
+    suspend fun getFaceTemplatesByIdentifier(identifier: String): List<FaceTemplate<V, D>> {
+        ensureNotClosed()
+        return getFaceTemplates().mapNotNull {
+            if (it.identifier == identifier) it.faceTemplate else null
+        }
+    }
+
+    /**
+     * Delete face templates tagged as the given identifier
+     *
+     * @param identifier Identifier whose face templates will be deleted
+     * @return List of deleted face templates
+     */
+    suspend fun deleteFaceTemplatesByIdentifier(identifier: String): List<FaceTemplate<V, D>> {
+        ensureNotClosed()
+        val deleted = lock.withLock {
+            val toDelete = faceTemplateList.filter { it.identifier == identifier }
+            faceTemplateList.removeAll(toDelete)
+            toDelete
+        }
+        return deleted.map { it.faceTemplate }
+    }
+
+    /**
+     * Delete face templates
+     *
+     * @param faceTemplates Face templates to delete
+     */
+    suspend fun deleteFaceTemplates(faceTemplates: List<TaggedFaceTemplate<V, D>>) {
+        ensureNotClosed()
+        lock.withLock {
+            this.faceTemplateList.removeAll(faceTemplates)
+        }
+    }
+
+    /**
+     * Close the registry. The registry can no longer be used after calling this function and calls to
+     * the registry methods will throw an [IllegalStateException]
+     */
     override suspend fun close() {
-        faceRecognition.values.forEach { it.close() }
-        faceTemplateList.clear()
-        job.cancel()
-    }
-
-    fun getTemplatesByVersion(faceTemplateVersion: FaceTemplateVersion<*>): Array<TaggedFaceTemplate<*, *>> {
-        return faceTemplateList.filter {
-            it.faceTemplate.version == faceTemplateVersion
-        }.toTypedArray()
-    }
-
-    fun getIdentifiersByVersion(faceTemplateVersion: FaceTemplateVersion<*>): Set<String> {
-        return faceTemplateList.mapNotNull {
-            if (it.faceTemplate.version == faceTemplateVersion) {
-                it.identifier
-            } else {
-                null
+        if (isClosed.compareAndSet(false, true)) {
+            lock.withLock {
+                faceTemplateList.clear()
             }
-        }.toSet()
-    }
-
-    fun getVersionsForIdentifier(identifier: String): Array<FaceTemplateVersion<*>> {
-        return faceTemplateVersions.filter { version ->
-            faceTemplateList.firstOrNull { it.identifier == identifier && it.faceTemplate.version == version } != null
-        }.toTypedArray()
-    }
-
-    fun getTemplatesForIdentifier(identifier: String, faceTemplateVersion: FaceTemplateVersion<*>): Array<TaggedFaceTemplate<*, *>> {
-        return faceTemplateList.filter {
-            it.identifier == identifier && it.faceTemplate.version == faceTemplateVersion
-        }.toTypedArray()
-    }
-
-    private suspend fun autoEnrolFace(face: Face, image: IImage, identifier: String) {
-        val idVersions = getVersionsForIdentifier(identifier).toSet()
-        val versionsToEnrol = faceTemplateVersions.filter { version ->
-            !idVersions.contains(version)
+            job.cancel()
         }
-        val faceTemplates = versionsToEnrol.map { version ->
-            val template = faceRecognition[version]!!.createFaceRecognitionTemplates(arrayOf(face), image).first()
-            TaggedFaceTemplate(template, identifier)
-        }
-        if (faceTemplates.isNotEmpty()) {
-            faceTemplateList.addAll(faceTemplates)
-            try {
-                delegate?.onFaceTemplatesAdded(faceTemplates.toTypedArray())
-            } catch (_: Exception) {
-                faceTemplateList.removeAll(faceTemplates)
-            }
+    }
+
+    private fun ensureNotClosed() {
+        if (isClosed.get()) {
+            throw IllegalStateException("FaceTemplateRegistry is closed")
         }
     }
 }
