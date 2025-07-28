@@ -166,13 +166,41 @@ runBlocking {
 }
 ```
 
-### Using multi registry delegate
+### Monitoring face template additions
 
-When using [FaceTemplateMultiRegistry](./lib/src/main/java/com/appliedrec/verid3/facetemplateregistry/FaceTemplateMultiRegistry.kt), you can optionally register a delegate to receive updates when faces are added either by registration or by auto enrolment. This allows you to propagate the updates to your face template source.
+When using [FaceTemplateMultiRegistry](./lib/src/main/java/com/appliedrec/verid3/facetemplateregistry/FaceTemplateMultiRegistry.kt) it's possible that face templates will be automatically enrolled at authentication or identification.
+You can get a list of the auto-enrolled face templates from the authentication and identification results.
 
 ```kotlin
 // Your multi registry instance
-val mutliRegistry: FaceTemplateMultiRegistry
+val multiRegistry: FaceTemplateMultiRegistry
+
+// Authentication
+val authenticationResult = multiRegistry.authenticateFace(face, image, identifier)
+if (authenticationResult.authenticated 
+    && authenticationResult.autoEnrolledFaceTemplates.isNotEmpty()) {
+    val count = authenticationResult.autoEnrolledFaceTemplates.size
+    print("$count face template(s) have been automatically enrolled as $identifier")
+}
+
+// Identification
+val identificationResults = multiRegistry.identifyFace(face, image)
+identificationResults.firstOrNull()?.let { identification ->
+    if (identification.autoEnrolledFaceTemplates.isNotEmpty()) {
+        val count = identification.autoEnrolledFaceTemplates.size
+        val identifier = identification.TaggedFaceTemplate.identifier
+        print("$count face template(s) have been automatically enrolled as $identifier")
+    }
+}
+```
+
+#### Using delegate
+
+You can also optionally register a delegate to receive updates when faces are added either by registration or by auto enrolment. This allows you to propagate the updates to your face template source.
+
+```kotlin
+// Your multi registry instance
+val multiRegistry: FaceTemplateMultiRegistry
 
 // Set the delegate
 multiRegistry.delegate = object : FaceTemplateMultiRegistry.Delegate {

@@ -92,13 +92,14 @@ class FaceTemplateMultiRegistry(
      * @param identifier Identifier for the user to whom the face belongs
      * @param forceEnrolment Set to `true` to force enrolment even if a similar face template is
      * already registered as another user.
+     * @return List of registered face templates
      */
     suspend fun registerFace(
         face: Face,
         image: IImage,
         identifier: String,
         forceEnrolment: Boolean=false
-    ) = withContext(coroutineContext) {
+    ): List<FaceTemplate<*, *>> = withContext(coroutineContext) {
         ensureNotClosed()
         coroutineScope {
             val deferredFaceTemplates = registries.map { registry ->
@@ -114,6 +115,7 @@ class FaceTemplateMultiRegistry(
                     delegate.onFaceTemplatesAdded(faceTemplates)
                 }
             }
+            return@coroutineScope faceTemplates.map { it.faceTemplate }
         }
     }
 
@@ -138,11 +140,14 @@ class FaceTemplateMultiRegistry(
         safe: Boolean=true
     ): List<IdentificationResult<*, *>> = withContext(coroutineContext) {
         ensureNotClosed()
-        suspend fun autoEnrolFromResults(registry: FaceTemplateRegistry<FaceTemplateVersion<Any>, Any>, results: List<IdentificationResult<*, *>>) {
+        suspend fun autoEnrolFromResults(
+            registry: FaceTemplateRegistry<FaceTemplateVersion<Any>, Any>,
+            results: List<IdentificationResult<*, *>>
+        ) : List<FaceTemplate<*, *>> {
             if (!autoEnrol) {
-                return
+                return emptyList()
             }
-            results.firstNotNullOfOrNull {
+            return results.firstNotNullOfOrNull {
                 if (it.score >= registry.configuration.autoEnrolmentThreshold) {
                     it.taggedFaceTemplate.identifier
                 } else {
@@ -150,7 +155,7 @@ class FaceTemplateMultiRegistry(
                 }
             }?.let { identifier ->
                 autoEnrolFace(face, image, identifier)
-            }
+            } ?: emptyList()
         }
         if (safe) {
             val users = registries.associate { it.faceRecognition.version to it.getIdentifiers() }
@@ -158,18 +163,22 @@ class FaceTemplateMultiRegistry(
             for (registry in registries) {
                 val versionUsers = users[registry.faceRecognition.version] ?: emptySet()
                 if (versionUsers.containsAll(allUsers)) {
-                    val results = registry.identifyFace(face, image)
-                    autoEnrolFromResults(registry, results)
-                    return@withContext results
+                    val results = registry.identifyFace(face, image).toMutableList()
+                    if (results.isNotEmpty()) {
+                        val autoEnrolledFaceTemplates = autoEnrolFromResults(registry, results)
+                        results[0] = results[0].copy(autoEnrolledFaceTemplates = autoEnrolledFaceTemplates)
+                    }
+                    return@withContext results.toList()
                 }
             }
             throw IllegalStateException("No common face template version found")
         } else {
             for (registry in registries) {
-                val results = registry.identifyFace(face, image)
+                val results = registry.identifyFace(face, image).toMutableList()
                 if (results.isNotEmpty()) {
-                    autoEnrolFromResults(registry, results)
-                    return@withContext results
+                    val autoEnrolledFaceTemplates = autoEnrolFromResults(registry, results)
+                    results[0] = results[0].copy(autoEnrolledFaceTemplates = autoEnrolledFaceTemplates)
+                    return@withContext results.toList()
                 }
             }
             return@withContext emptyList()
@@ -213,15 +222,18 @@ class FaceTemplateMultiRegistry(
             }
         }
         finalResult?.let { result ->
+            val mutableAuthenticationResult = MutableAuthenticationResult(result)
             if (result.authenticated && autoEnrol) {
                 val threshold = registries.first {
                     it.faceRecognition.version == result.challengeFaceTemplate.version
                 }.configuration.autoEnrolmentThreshold
                 if (result.score >= threshold) {
-                    autoEnrolFace(face, image, identifier)
+                    val autoEnrolledFaceTemplates = autoEnrolFace(face, image, identifier)
+                    mutableAuthenticationResult.autoEnrolledFaceTemplates
+                        .addAll(autoEnrolledFaceTemplates)
                 }
             }
-            result
+            mutableAuthenticationResult.toAuthenticationResult()
         } ?: error?.let { throw error } ?: throw Exception("Unknown error")
     }
 
@@ -310,7 +322,7 @@ class FaceTemplateMultiRegistry(
         face: Face,
         image: IImage,
         identifier: String
-    ) = withContext(coroutineContext) {
+    ): List<FaceTemplate<*, *>> = withContext(coroutineContext) {
         coroutineScope {
             val templates = registries
                 .map { registry ->
@@ -332,6 +344,7 @@ class FaceTemplateMultiRegistry(
                     }
                 }
             }
+            return@coroutineScope templates.map { it.faceTemplate }
         }
     }
 
