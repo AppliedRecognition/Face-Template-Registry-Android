@@ -96,19 +96,21 @@ class FaceTemplateRegistry<V: FaceTemplateVersion<D>, D>(
         val taggedTemplate = TaggedFaceTemplate(template, identifier)
         if (!forceEnrolment) {
             val allTemplates = getFaceTemplates()
-            val scores = faceRecognition.compareFaceRecognitionTemplates(
-                allTemplates.map { it.faceTemplate },
-                template
-            )
-            val existingUser = scores
-                .zip(allTemplates)
-                .firstOrNull { (score, faceTemplate) ->
-                    score >= configuration.authenticationThreshold
-                            && faceTemplate.identifier != identifier
+            if (allTemplates.isNotEmpty()) {
+                val scores = faceRecognition.compareFaceRecognitionTemplates(
+                    allTemplates.map { it.faceTemplate },
+                    template
+                )
+                val existingUser = scores
+                    .zip(allTemplates)
+                    .firstOrNull { (score, faceTemplate) ->
+                        score >= configuration.authenticationThreshold
+                                && faceTemplate.identifier != identifier
+                    }
+                    ?.second?.identifier
+                if (existingUser != null) {
+                    throw FaceTemplateRegistryException.SimilarFaceAlreadyRegistered(existingUser)
                 }
-                ?.second?.identifier
-            if (existingUser != null) {
-                throw IllegalStateException("Similar face is already registered as $existingUser")
             }
         }
         lock.withLock {
@@ -135,6 +137,9 @@ class FaceTemplateRegistry<V: FaceTemplateVersion<D>, D>(
         val faceTemplates = getFaceTemplates()
         val template = faceRecognition.createFaceRecognitionTemplates(listOf(face), image)
             .first()
+        if (faceTemplates.isEmpty()) {
+            return@withContext emptyList()
+        }
         val scores = faceRecognition.compareFaceRecognitionTemplates(
             faceTemplates.map { it.faceTemplate },
             template
@@ -155,7 +160,7 @@ class FaceTemplateRegistry<V: FaceTemplateVersion<D>, D>(
     /**
      * Authenticate face and image against a specific identifier
      *
-     * The function will throw an [IllegalStateException] if no face templates are registered for
+     * The function will throw an [FaceTemplateRegistryException.IdentifierNotRegistered] if no face templates are registered for
      * the given identifier.
      *
      * @param face Face to authenticate
@@ -170,11 +175,9 @@ class FaceTemplateRegistry<V: FaceTemplateVersion<D>, D>(
         identifier: String
     ): AuthenticationResult<V, D> = withContext(coroutineContext) {
         ensureNotClosed()
-        val templates = getFaceTemplates().mapNotNull {
-            if (it.identifier == identifier) it.faceTemplate else null
-        }
+        val templates = getFaceTemplatesByIdentifier(identifier)
         if (templates.isEmpty()) {
-            throw IllegalStateException("$identifier has no face templates")
+            throw FaceTemplateRegistryException.IdentifierNotRegistered(identifier)
         }
         val template = faceRecognition.createFaceRecognitionTemplates(listOf(face), image)
             .first()
@@ -206,33 +209,9 @@ class FaceTemplateRegistry<V: FaceTemplateVersion<D>, D>(
         }
     }
 
-    /**
-     * Delete face templates tagged as the given identifier
-     *
-     * @param identifier Identifier whose face templates will be deleted
-     * @return List of deleted face templates
-     */
-    suspend fun deleteFaceTemplatesByIdentifier(identifier: String): List<FaceTemplate<V, D>> {
-        ensureNotClosed()
-        val deleted = lock.withLock {
-            val toDelete = faceTemplateList.filter { it.identifier == identifier }
-            faceTemplateList.removeAll(toDelete)
-            toDelete
-        }
-        return deleted.map { it.faceTemplate }
-    }
-
-    /**
-     * Delete face templates
-     *
-     * @param faceTemplates Face templates to delete
-     */
-    suspend fun deleteFaceTemplates(faceTemplates: List<TaggedFaceTemplate<V, D>>) {
-        ensureNotClosed()
-        lock.withLock {
-            this.faceTemplateList.removeAll(faceTemplates)
-        }
-    }
+    @Suppress("UNCHECKED_CAST")
+    val typeErased: FaceTemplateRegistry<FaceTemplateVersion<Any>, Any>
+        get() = this as FaceTemplateRegistry<FaceTemplateVersion<Any>, Any>
 
     /**
      * Close the registry. The registry can no longer be used after calling this function and calls to

@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * @param registry Registry to handle
  * @param otherRegistries Other registries to handle
- * @param checkForIncompatibleFaceTemplates Set to `false` to accept registries with faces that
+ * @param ensureFaceTemplateCompatibility Set to `false` to accept registries with faces that
  * cannot be effectively compared. For example, if one registry has users [user1, user2] and one
  * of the other registries has users [user1, user3] then there is no way to compare all users
  * together because comparisons crossing registry boundaries are not possible.
@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class FaceTemplateMultiRegistry(
     registry: FaceTemplateRegistry<FaceTemplateVersion<Any>, Any>,
     vararg otherRegistries: FaceTemplateRegistry<FaceTemplateVersion<Any>, Any>,
-    checkForIncompatibleFaceTemplates: Boolean = true
+    ensureFaceTemplateCompatibility: Boolean = true
 ) : SuspendingCloseable {
     interface Delegate {
         fun onFaceTemplatesAdded(faceTemplates: List<TaggedFaceTemplate<*, *>>)
@@ -55,7 +55,7 @@ class FaceTemplateMultiRegistry(
 
     init {
         registries = listOf(registry) + otherRegistries
-        if (checkForIncompatibleFaceTemplates) {
+        if (ensureFaceTemplateCompatibility) {
             runBlocking(coroutineContext) { checkForIncompatibleFaceTemplates() }
         }
     }
@@ -64,9 +64,9 @@ class FaceTemplateMultiRegistry(
      * Checks that there is a common face template version among all registries.
      *
      * This check will run on initialization if the constructor parameter
-     * `checkForIncompatibleFaceTemplates` is left at its default value of `true`.
+     * `ensureFaceTemplateCompatibility` is left at its default value of `true`.
      */
-    suspend fun checkForIncompatibleFaceTemplates() = withContext(coroutineContext) {
+    private suspend fun checkForIncompatibleFaceTemplates() = withContext(coroutineContext) {
         coroutineScope {
             val deferredIdentifiers = registries.map { registry ->
                 async {
@@ -79,7 +79,7 @@ class FaceTemplateMultiRegistry(
                 ids.containsAll(allIdentifiers)
             }
             if (!hasCommonTemplate) {
-                throw IllegalStateException("No common face template version found")
+                throw FaceTemplateRegistryException.IncompatibleFaceTemplates
             }
         }
     }
@@ -164,20 +164,23 @@ class FaceTemplateMultiRegistry(
                 val versionUsers = users[registry.faceRecognition.version] ?: emptySet()
                 if (versionUsers.containsAll(allUsers)) {
                     val results = registry.identifyFace(face, image).toMutableList()
-                    if (results.isNotEmpty()) {
+                    if (results.isNotEmpty() && autoEnrol) {
                         val autoEnrolledFaceTemplates = autoEnrolFromResults(registry, results)
                         results[0] = results[0].copy(autoEnrolledFaceTemplates = autoEnrolledFaceTemplates)
                     }
                     return@withContext results.toList()
                 }
             }
-            throw IllegalStateException("No common face template version found")
+            throw FaceTemplateRegistryException.IncompatibleFaceTemplates
         } else {
             for (registry in registries) {
                 val results = registry.identifyFace(face, image).toMutableList()
                 if (results.isNotEmpty()) {
-                    val autoEnrolledFaceTemplates = autoEnrolFromResults(registry, results)
-                    results[0] = results[0].copy(autoEnrolledFaceTemplates = autoEnrolledFaceTemplates)
+                    if (autoEnrol) {
+                        val autoEnrolledFaceTemplates = autoEnrolFromResults(registry, results)
+                        results[0] =
+                            results[0].copy(autoEnrolledFaceTemplates = autoEnrolledFaceTemplates)
+                    }
                     return@withContext results.toList()
                 }
             }
@@ -188,8 +191,8 @@ class FaceTemplateMultiRegistry(
     /**
      * Authenticate a face
      *
-     * The function will throw an [IllegalStateException] if no face templates are registered for
-     * the given identifier in any of the registries.
+     * The function will throw an [FaceTemplateRegistryException.IdentifierNotRegistered] if no
+     * face templates are registered for the given identifier in any of the registries.
      *
      * @param face Face to authenticate
      * @param image Image in which the face was detected
@@ -283,25 +286,6 @@ class FaceTemplateMultiRegistry(
             registries.map { registry ->
                 async {
                     registry.getFaceTemplatesByIdentifier(identifier)
-                }
-            }.awaitAll().flatten()
-        }
-    }
-
-    /**
-     * Delete face templates tagged as the given identifier
-     *
-     * @param identifier Identifier whose face templates will be deleted
-     * @return List of deleted face templates
-     */
-    suspend fun deleteFaceTemplatesByIdentifier(
-        identifier: String
-    ): List<FaceTemplate<*, *>> = withContext(coroutineContext) {
-        ensureNotClosed()
-        coroutineScope {
-            registries.map { registry ->
-                async {
-                    registry.deleteFaceTemplatesByIdentifier(identifier)
                 }
             }.awaitAll().flatten()
         }
