@@ -1,21 +1,13 @@
 package com.appliedrec.verid3.facetemplateregistry
 
-import android.graphics.PointF
-import android.graphics.RectF
-import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.appliedrec.verid3.common.EulerAngle
-import com.appliedrec.verid3.common.Face
-import com.appliedrec.verid3.common.IImage
-import com.appliedrec.verid3.common.ImageFormat
 import kotlinx.coroutines.runBlocking
-import org.junit.After
-
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
-
-import org.junit.Assert.*
-import org.junit.Before
 
 /**
  * Instrumented test, which will execute on an Android device.
@@ -25,93 +17,146 @@ import org.junit.Before
 @RunWith(AndroidJUnit4::class)
 class FaceTemplateRegistryTest {
 
-    private lateinit var registry: FaceTemplateRegistry<MockFaceTemplateVersion.Version1, Float>
-    private lateinit var fakeFaceRecognition: MockFaceRecognition<MockFaceTemplateVersion.Version1>
-
-    @Before
-    fun setup() {
-        fakeFaceRecognition = MockFaceRecognition(MockFaceTemplateVersion.Version1)
-        val templates = listOf(
-            TaggedFaceTemplate(MockFaceTemplate(MockFaceTemplateVersion.Version1, 100f), "User1"),
-            TaggedFaceTemplate(MockFaceTemplate(MockFaceTemplateVersion.Version1, 0f), "User2"),
-        )
-        registry = FaceTemplateRegistry(fakeFaceRecognition, templates)
-    }
-
-    @After
-    fun tearDown() = runBlocking {
+    @Test
+    fun test_getFaceTemplatesOnClosedRegistry_fails(): Unit = runBlocking {
+        val registry = createRegistry(MockFaceTemplateVersion.Version1, 1, 1)
         registry.close()
-    }
-
-    @Test
-    fun returnsInitialTemplates() = runBlocking {
-        val templates = registry.getFaceTemplates()
-        assertEquals(2, templates.size)
-        assertEquals("User1", templates[0].identifier)
-        assertEquals("User2", templates[1].identifier)
-    }
-
-    @Test
-    fun registersNewFace() = runBlocking {
-        val newFace = createFakeFace(10f)
-        val image = createFakeImage()
-        registry.registerFace(newFace, image, "User3")
-        val ids = registry.getIdentifiers()
-        assertTrue(ids.contains("User3"))
-    }
-
-    @Test
-    fun registerFaceSimilarToOtherUser_throwsException() = runBlocking {
-        val newFace = createFakeFace(100.1f)
-        val image = createFakeImage()
         try {
-            registry.registerFace(newFace, image, "User3")
-            fail("Should have thrown an exception")
-        } catch (e: IllegalStateException) {
-            // Expected
+            registry.getFaceTemplates()
+            fail()
+        } catch (_: IllegalStateException) {
+            // All good
+        }
+    }
+
+    // region Registration
+
+    @Test
+    fun test_registerFaceTemplate(): Unit = runBlocking {
+        val rec = MockFaceRecognition(MockFaceTemplateVersion.Version1)
+        val registry = FaceTemplateRegistry(rec, emptyList())
+        val face = createFakeFace(0f)
+        val template = registry.registerFace(face, createFakeImage(), "Test")
+        assertEquals(template.data, 0f, 0.001f)
+        assertEquals(template.version, MockFaceTemplateVersion.Version1)
+        val templates = registry.getFaceTemplates()
+        assertEquals(templates.size, 1)
+    }
+
+    @Test
+    fun test_registerSimilarFaceAsDifferentIdentifier_fail(): Unit = runBlocking {
+        val rec = MockFaceRecognition(MockFaceTemplateVersion.Version1)
+        val templates = (0..<10).map { i ->
+            TaggedFaceTemplate(
+                MockFaceTemplate(MockFaceTemplateVersion.Version1, i.toFloat()),
+                "User $i"
+            )
+        }
+        val registry = FaceTemplateRegistry(rec, templates)
+        val face = createFakeFace(5.1f)
+        try {
+            registry.registerFace(face, createFakeImage(), "New user")
+            fail()
+        } catch (e: FaceTemplateRegistryException.SimilarFaceAlreadyRegistered) {
+            assertEquals(e.registeredIdentifier, "User 5")
+        } catch (e: Exception) {
+            fail()
         }
     }
 
     @Test
-    fun forceRegisterFaceSimilarToOtherUser(): Unit = runBlocking {
-        val newFace = createFakeFace(100.1f)
-        val image = createFakeImage()
-        registry.registerFace(newFace, image, "User3", true)
+    fun test_forceRegisterSimilarFacesAsDifferentIdentifier(): Unit = runBlocking {
+        val rec = MockFaceRecognition(MockFaceTemplateVersion.Version1)
+        val templates = (0..<10).map { i ->
+            TaggedFaceTemplate(
+                MockFaceTemplate(MockFaceTemplateVersion.Version1, i.toFloat()),
+                "User $i"
+            )
+        }
+        val registry = FaceTemplateRegistry(rec, templates)
+        val face = createFakeFace(5.1f)
+        val registeredTemplate = registry.registerFace(face, createFakeImage(), "New user", true)
+        assertEquals(registeredTemplate.data, 5.1f)
+        assertEquals(registeredTemplate.version, MockFaceTemplateVersion.Version1)
+        val identifiers = registry.getIdentifiers()
+        assertTrue(identifiers.contains("New user"))
+    }
+
+    // endregion
+
+    // region Identification
+
+    @Test
+    fun test_identifyFaceInEmptySet_returnsEmptyResult(): Unit = runBlocking {
+        val rec = MockFaceRecognition(MockFaceTemplateVersion.Version1)
+        val registry = FaceTemplateRegistry(rec, emptyList())
+        val face = createFakeFace(5.1f)
+        val idResults = registry.identifyFace(face, createFakeImage())
+        assertEquals(0, idResults.size)
     }
 
     @Test
-    fun identifyFace_returnsBestMatchingTemplate() = runBlocking {
-        val challengeFace = createFakeFace(100.1f)
-        val image = createFakeImage()
-        val results = registry.identifyFace(challengeFace, image)
-        assertEquals(1, results.size)
-        val result = results[0]
-        assertEquals("User1", result.taggedFaceTemplate.identifier)
-        assertTrue("Score should be between 0 and 1", result.score in 0f..1f)
-        assertTrue("Score should be closer to 1.0", result.score > 0.5f)
+    fun test_identifyFace(): Unit = runBlocking {
+        val rec = MockFaceRecognition(MockFaceTemplateVersion.Version1)
+        val templates = (0..<10).map { i ->
+            TaggedFaceTemplate(
+                MockFaceTemplate(MockFaceTemplateVersion.Version1, i.toFloat()),
+                "User $i"
+            )
+        }
+        val registry = FaceTemplateRegistry(rec, templates)
+        val face = createFakeFace(5.1f)
+        val idResults = registry.identifyFace(face, createFakeImage())
+        assertEquals(1, idResults.size)
+        assertEquals("User 5", idResults[0].taggedFaceTemplate.identifier)
+    }
+
+    // endregion
+
+    // region Authentication
+
+    @Test
+    fun test_authenticateFace(): Unit = runBlocking {
+        val rec = MockFaceRecognition(MockFaceTemplateVersion.Version1)
+        val templates = (0..<10).map { i ->
+            TaggedFaceTemplate(
+                MockFaceTemplate(MockFaceTemplateVersion.Version1, i.toFloat()),
+                "User $i"
+            )
+        }
+        val registry = FaceTemplateRegistry(rec, templates)
+        val face = createFakeFace(5.1f)
+        val authResult = registry.authenticateFace(face, createFakeImage(), "User 5")
+        assertTrue(authResult.authenticated)
     }
 
     @Test
-    fun identifyFace_filtersOutLowScores() = runBlocking {
-        val challengeFace = createFakeFace(50f)
-        val image = createFakeImage()
-        val results = registry.identifyFace(challengeFace, image)
-        assertTrue("No matches should be returned due to high threshold", results.isEmpty())
+    fun test_authenticateFaceInEmptyRegistry_fail(): Unit = runBlocking {
+        val rec = MockFaceRecognition(MockFaceTemplateVersion.Version1)
+        val registry = FaceTemplateRegistry(rec, emptyList())
+        val face = createFakeFace(5.1f)
+        try {
+            registry.authenticateFace(face, createFakeImage(), "User 5")
+            fail()
+        } catch (e: FaceTemplateRegistryException.IdentifierNotRegistered) {
+            assertEquals(e.identifier, "User 5")
+        } catch (e: Exception) {
+            fail()
+        }
     }
 
     @Test
-    fun identifyFace_returnsHighestScorePerUser() = runBlocking {
-        val duplicateTemplates = listOf(
-            TaggedFaceTemplate(MockFaceTemplate(MockFaceTemplateVersion.Version1, 100f), "User1"),
-            TaggedFaceTemplate(MockFaceTemplate(MockFaceTemplateVersion.Version1, 100.1f), "User1"),
-            TaggedFaceTemplate(MockFaceTemplate(MockFaceTemplateVersion.Version1, 0f), "User2")
-        )
-        registry = FaceTemplateRegistry(fakeFaceRecognition, duplicateTemplates)
-        val challengeFace = createFakeFace(100.2f)
-        val image = createFakeImage()
-        val results = registry.identifyFace(challengeFace, image)
-        assertEquals(1, results.count { it.taggedFaceTemplate.identifier == "User1" })
-        val bestScore = results.first { it.taggedFaceTemplate.identifier == "User1" }.score
-        assertTrue(bestScore > 0.9f)
+    fun test_authenticateFaceOfUnregisteredUser(): Unit = runBlocking {
+        val rec = MockFaceRecognition(MockFaceTemplateVersion.Version1)
+        val templates = (0..<10).map { i ->
+            TaggedFaceTemplate(
+                MockFaceTemplate(MockFaceTemplateVersion.Version1, i.toFloat()),
+                "User $i"
+            )
+        }
+        val registry = FaceTemplateRegistry(rec, templates)
+        val face = createFakeFace(50.1f)
+        val authResult = registry.authenticateFace(face, createFakeImage(), "User 5")
+        assertFalse(authResult.authenticated)
     }
 }
