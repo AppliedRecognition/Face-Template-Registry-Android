@@ -90,21 +90,18 @@ class FaceTemplateMultiRegistry(
      * @param face Face to register
      * @param image Image in which the face was detected
      * @param identifier Identifier for the user to whom the face belongs
-     * @param forceEnrolment Set to `true` to force enrolment even if a similar face template is
-     * already registered as another user.
      * @return List of registered face templates
      */
     suspend fun registerFace(
         face: Face,
         image: IImage,
-        identifier: String,
-        forceEnrolment: Boolean=false
+        identifier: String
     ): List<FaceTemplate<*, *>> = withContext(coroutineContext) {
         ensureNotClosed()
         coroutineScope {
             val deferredFaceTemplates = registries.map { registry ->
                 async {
-                    registry.registerFace(face, image, identifier, forceEnrolment)
+                    registry.registerFace(face, image, identifier)
                 }
             }
             val faceTemplates = deferredFaceTemplates.awaitAll().map {

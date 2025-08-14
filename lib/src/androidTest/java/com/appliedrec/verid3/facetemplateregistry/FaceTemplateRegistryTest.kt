@@ -60,12 +60,12 @@ class FaceTemplateRegistryTest {
         } catch (e: FaceTemplateRegistryException.SimilarFaceAlreadyRegistered) {
             assertEquals(e.registeredIdentifier, "User 5")
         } catch (e: Exception) {
-            fail()
+            fail(e.message)
         }
     }
 
     @Test
-    fun test_forceRegisterSimilarFacesAsDifferentIdentifier(): Unit = runBlocking {
+    fun test_registerDifferentFaceAsSameIdentifier_fail(): Unit = runBlocking {
         val rec = MockFaceRecognition(MockFaceTemplateVersion.Version1)
         val templates = (0..<10).map { i ->
             TaggedFaceTemplate(
@@ -74,12 +74,15 @@ class FaceTemplateRegistryTest {
             )
         }
         val registry = FaceTemplateRegistry(rec, templates)
-        val face = createFakeFace(5.1f)
-        val registeredTemplate = registry.registerFace(face, createFakeImage(), "New user", true)
-        assertEquals(registeredTemplate.data, 5.1f)
-        assertEquals(registeredTemplate.version, MockFaceTemplateVersion.Version1)
-        val identifiers = registry.getIdentifiers()
-        assertTrue(identifiers.contains("New user"))
+        val face = createFakeFace(11.0f)
+        try {
+            registry.registerFace(face, createFakeImage(), "User 1")
+            fail()
+        } catch (e: FaceTemplateRegistryException.FaceDoesNotMatchExisting) {
+            assertTrue(e.maxScore < registry.configuration.authenticationThreshold)
+        } catch (e: Exception) {
+            fail(e.message)
+        }
     }
 
     // endregion
@@ -107,6 +110,13 @@ class FaceTemplateRegistryTest {
         val registry = FaceTemplateRegistry(rec, templates)
         val face = createFakeFace(5.1f)
         val idResults = registry.identifyFace(face, createFakeImage())
+        idResults.firstOrNull()?.taggedFaceTemplate?.identifier?.let { identifier ->
+            if (idResults.size > 1) {
+
+            } else {
+
+            }
+        }
         assertEquals(1, idResults.size)
         assertEquals("User 5", idResults[0].taggedFaceTemplate.identifier)
     }
@@ -141,7 +151,7 @@ class FaceTemplateRegistryTest {
         } catch (e: FaceTemplateRegistryException.IdentifierNotRegistered) {
             assertEquals(e.identifier, "User 5")
         } catch (e: Exception) {
-            fail()
+            fail(e.message)
         }
     }
 
