@@ -7,6 +7,8 @@ plugins {
     signing
 }
 
+version = "1.1.0"
+
 android {
     namespace = "com.appliedrec.verid3.facetemplateregistry"
     compileSdk = 36
@@ -57,4 +59,40 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     testImplementation(kotlin("test"))
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("release") {
+            afterEvaluate {
+                from(components["release"])
+            }
+            groupId = "com.appliedrec"
+            artifactId = "verid3-face-template-registry"
+
+            pom {
+                name.set("Face Template Registry")
+                description.set("Register, authenticate and identify face templates")
+                url.set("https://github.com/AppliedRecognition/Face-Template-Registry-Android")
+                licenses {
+                    license {
+                        name.set("The Apache License, Version 2.0")
+                        url.set("http://www.apache.org/licenses/LICENSE-2.0.txt")
+                    }
+                }
+                scm {
+                    connection.set("scm:git:git://github.com/AppliedRecognition/Face-Template-Registry-Android.git")
+                    developerConnection.set("scm:git:ssh://github.com/AppliedRecognition/Face-Template-Registry-Android.git")
+                    url.set("https://github.com/jakubdolejs/Face-Template-Registry-Android")
+                }
+                developers {
+                    developer {
+                        id.set("appliedrecognition")
+                        name.set("Applied Recognition Corp.")
+                        email.set("support@appliedrecognition.com")
+                    }
+                }
+            }
+        }
+    }
 }
