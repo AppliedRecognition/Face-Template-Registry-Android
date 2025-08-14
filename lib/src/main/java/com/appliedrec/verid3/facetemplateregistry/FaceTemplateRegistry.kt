@@ -80,36 +80,48 @@ class FaceTemplateRegistry<V: FaceTemplateVersion<D>, D>(
      * @param face Face to register a template for
      * @param image Image in which the face was detected
      * @param identifier Identifier for the user to whom the face belongs
-     * @param forceEnrolment If `true`, the face will be enrolled even if another identifier with a
-     * similar face already exists.
      * @return Registered face template
      */
     suspend fun registerFace(
         face: Face,
         image: IImage,
-        identifier: String,
-        forceEnrolment: Boolean = false
+        identifier: String
     ): FaceTemplate<V, D> = withContext(coroutineContext) {
         ensureNotClosed()
         val template = faceRecognition.createFaceRecognitionTemplates(
             listOf(face), image).first()
         val taggedTemplate = TaggedFaceTemplate(template, identifier)
-        if (!forceEnrolment) {
-            val allTemplates = getFaceTemplates()
-            if (allTemplates.isNotEmpty()) {
-                val scores = faceRecognition.compareFaceRecognitionTemplates(
-                    allTemplates.map { it.faceTemplate },
-                    template
+        val allTemplates = getFaceTemplates()
+        if (allTemplates.isNotEmpty()) {
+            val scores = faceRecognition.compareFaceRecognitionTemplates(
+                allTemplates.map { it.faceTemplate },
+                template
+            )
+            val existingUser = scores
+                .zip(allTemplates)
+                .firstOrNull { (score, faceTemplate) ->
+                    score >= configuration.authenticationThreshold
+                            && faceTemplate.identifier != identifier
+                }
+            if (existingUser != null) {
+                throw FaceTemplateRegistryException.SimilarFaceAlreadyRegistered(
+                    existingUser.second.identifier,
+                    template,
+                    existingUser.first
                 )
-                val existingUser = scores
-                    .zip(allTemplates)
-                    .firstOrNull { (score, faceTemplate) ->
-                        score >= configuration.authenticationThreshold
-                                && faceTemplate.identifier != identifier
-                    }
-                    ?.second?.identifier
-                if (existingUser != null) {
-                    throw FaceTemplateRegistryException.SimilarFaceAlreadyRegistered(existingUser)
+            }
+            allTemplates.mapIndexedNotNull { index, faceTemplate ->
+                if (faceTemplate.identifier != identifier) {
+                    null
+                } else {
+                    faceTemplate.faceTemplate to scores[index]
+                }
+            }.maxByOrNull { it.second }?.second?.let { maxScore ->
+                if (maxScore < configuration.authenticationThreshold) {
+                    throw FaceTemplateRegistryException.FaceDoesNotMatchExisting(
+                        template,
+                        maxScore
+                    )
                 }
             }
         }
