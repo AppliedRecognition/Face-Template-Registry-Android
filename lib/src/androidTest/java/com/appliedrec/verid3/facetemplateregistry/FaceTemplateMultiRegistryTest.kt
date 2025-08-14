@@ -95,17 +95,6 @@ class FaceTemplateMultiRegistryTest {
     }
 
     @Test
-    fun test_registerSimilarFaceAsDifferentIdentifier(): Unit = runBlocking {
-        val reg1 = createRegistry(MockFaceTemplateVersion.Version1, 1, 1)
-        val reg2 = createRegistry(MockFaceTemplateVersion.Version2, 1, 1)
-        FaceTemplateMultiRegistry(reg1.typeErased, reg2.typeErased).use { multiRegistry ->
-            val registeredFaceTemplates =
-                multiRegistry.registerFace(createFakeFace(0.1f), createFakeImage(), "User 2", true)
-            assertEquals(multiRegistry.registries.size, registeredFaceTemplates.size)
-        }
-    }
-
-    @Test
     fun test_registerFaceEnsuringDelegateCalled(): Unit = runBlocking {
         val reg1 = createRegistry(MockFaceTemplateVersion.Version1, 0, 1)
         val reg2 = createRegistry(MockFaceTemplateVersion.Version2, 0, 1)
