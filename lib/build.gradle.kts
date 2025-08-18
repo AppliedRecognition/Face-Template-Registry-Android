@@ -3,7 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
-    `maven-publish`
+    alias(libs.plugins.vanniktech.publish)
     signing
 }
 
@@ -18,13 +18,6 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
-    }
-
-    publishing {
-        singleVariant("release") {
-            withSourcesJar()
-            withJavadocJar()
-        }
     }
 
     buildTypes {
@@ -54,45 +47,42 @@ android {
 
 dependencies {
     implementation(libs.androidx.core.ktx)
-    implementation(libs.verid.common)
+    api(libs.verid.common)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     testImplementation(kotlin("test"))
 }
 
-publishing {
-    publications {
-        create<MavenPublication>("release") {
-            afterEvaluate {
-                from(components["release"])
+mavenPublishing {
+    coordinates("com.appliedrec", "face-template-registry")
+    pom {
+        name.set("Face Template Registry")
+        description.set("Register, authenticate and identify face templates")
+        url.set("https://github.com/AppliedRecognition/Face-Template-Registry-Android")
+        licenses {
+            license {
+                name.set("The Apache License, Version 2.0")
+                url.set("http://www.apache.org/licenses/LICENSE-2.0.txt")
             }
-            groupId = "com.appliedrec"
-            artifactId = "verid3-face-template-registry"
-
-            pom {
-                name.set("Face Template Registry")
-                description.set("Register, authenticate and identify face templates")
-                url.set("https://github.com/AppliedRecognition/Face-Template-Registry-Android")
-                licenses {
-                    license {
-                        name.set("The Apache License, Version 2.0")
-                        url.set("http://www.apache.org/licenses/LICENSE-2.0.txt")
-                    }
-                }
-                scm {
-                    connection.set("scm:git:git://github.com/AppliedRecognition/Face-Template-Registry-Android.git")
-                    developerConnection.set("scm:git:ssh://github.com/AppliedRecognition/Face-Template-Registry-Android.git")
-                    url.set("https://github.com/jakubdolejs/Face-Template-Registry-Android")
-                }
-                developers {
-                    developer {
-                        id.set("appliedrecognition")
-                        name.set("Applied Recognition Corp.")
-                        email.set("support@appliedrecognition.com")
-                    }
-                }
+        }
+        scm {
+            connection.set("scm:git:git://github.com/AppliedRecognition/Face-Template-Registry-Android.git")
+            developerConnection.set("scm:git:ssh://github.com/AppliedRecognition/Face-Template-Registry-Android.git")
+            url.set("https://github.com/jakubdolejs/Face-Template-Registry-Android")
+        }
+        developers {
+            developer {
+                id.set("appliedrecognition")
+                name.set("Applied Recognition Corp.")
+                email.set("support@appliedrecognition.com")
             }
         }
     }
+    publishToMavenCentral(automaticRelease = true)
+}
+
+signing {
+    useGpgCmd()
+    sign(publishing.publications)
 }
