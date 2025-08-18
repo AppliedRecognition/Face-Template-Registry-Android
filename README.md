@@ -1,6 +1,6 @@
 # Face template registry
 
-The face template registry manages registration, authentication and identification of faces captured by the [Face capture]() library.
+The face template registry manages registration, authentication and identification of faces captured by the [Face capture](https://github.com/AppliedRecognition/Face-Capture-Android) library.
 
 The registry doesn't persist its data across app restarts. It keeps face templates in memory. It's up to the consumer to supply the registry with face templates at initialization.
 
@@ -13,7 +13,7 @@ The library has two face template registry classes:
 1. [FaceTemplateRegistry](./lib/src/main/java/com/appliedrec/verid3/facetemplateregistry/FaceTemplateRegistry.kt) – handles face templates for a single face recognition system.
 2. [FaceTemplateMultiRegistry](./lib/src/main/java/com/appliedrec/verid3/facetemplateregistry/FaceTemplateMultiRegistry.kt) – coordinates between multiple registries that use different face recognition systems.
 
-Note that both classes implement the [SuspendingCloseable]() interface from the Ver-ID Common Types library. This means that you can use a syntax similar to try-with-resources but in a suspending context. The following statement will create a face template registry
+Note that both classes implement the [`SuspendingCloseable`](https://github.com/AppliedRecognition/Ver-ID-Common-Types-Android/blob/main/lib/src/main/java/com/appliedrec/verid3/common/SuspendingCloseable.kt) interface from the Ver-ID Common Types library. This means that you can use a syntax similar to try-with-resources but in a suspending context. The following statement will create a face template registry
 instance and close it to release resources when it's no longer needed. After the registry is closed, calling its methods will throw an `IllegalStateException`.
 
 ```kotlin
