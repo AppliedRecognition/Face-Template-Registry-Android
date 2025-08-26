@@ -28,7 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class FaceTemplateRegistry<V: FaceTemplateVersion<D>, D>(
     val faceRecognition: FaceRecognition<V, D>,
     faceTemplates: List<TaggedFaceTemplate<V, D>>,
-    val configuration: Configuration = Configuration()
+    configuration: Configuration? = null
 ) : SuspendingCloseable {
 
     /**
@@ -39,9 +39,15 @@ class FaceTemplateRegistry<V: FaceTemplateVersion<D>, D>(
      * @property autoEnrolmentThreshold Threshold for face auto-enrolment
      */
     data class Configuration(
-        val authenticationThreshold: Float = 0.5f,
-        val identificationThreshold: Float = 0.5f,
-        val autoEnrolmentThreshold: Float = 0.6f
+        var authenticationThreshold: Float,
+        var identificationThreshold: Float,
+        var autoEnrolmentThreshold: Float
+    )
+
+    val configuration: Configuration = configuration ?: Configuration(
+        faceRecognition.defaultThreshold,
+        faceRecognition.defaultThreshold,
+        faceRecognition.defaultThreshold
     )
 
     private val faceTemplateList = faceTemplates.toMutableList()
