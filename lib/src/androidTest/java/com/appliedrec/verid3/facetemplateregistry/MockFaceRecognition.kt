@@ -8,6 +8,8 @@ import kotlin.math.abs
 
 class MockFaceRecognition<V: MockFaceTemplateVersion>(override val version: V) : FaceRecognition<V, Float> {
 
+    override val defaultThreshold: Float = 0.5f
+
     override suspend fun createFaceRecognitionTemplates(
         faces: List<Face>,
         image: IImage
