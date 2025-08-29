@@ -1,9 +1,12 @@
+import org.gradle.kotlin.dsl.withType
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.dokka.gradle.DokkaTaskPartial
 
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.vanniktech.publish)
+    alias(libs.plugins.dokka)
     signing
 }
 
@@ -85,4 +88,15 @@ mavenPublishing {
 signing {
     useGpgCmd()
     sign(publishing.publications)
+}
+
+dokka {
+    dokkaPublications.html {
+        outputDirectory.set(rootProject.file("docs"))
+    }
+}
+
+tasks.withType<DokkaTaskPartial>().configureEach {
+    moduleName.set("Face template registry")
+    moduleVersion.set(project.version.toString())
 }
